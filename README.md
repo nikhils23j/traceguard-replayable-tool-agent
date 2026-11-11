@@ -6,6 +6,13 @@ I built a LangGraph agent that can read runbooks and tickets, update ticket stat
 
 ![Task success](docs/img/task_success.png)
 
+## What I built
+
+- A [LangGraph loop](traceguard/agent.py) that asks a local MLX/Qwen2.5 model for one JSON tool action at a time. [LangChain structured tools](traceguard/agent.py) expose ticket reads, runbook reads, ticket status updates and record export.
+- A deterministic tool gate that checks the supplied tenant context, exact user intent and target, allowed status and action budget before execution. Writes pause at a LangGraph approval interrupt. The local prototype does not authenticate the tenant context.
+- A [SQLite workspace](traceguard/workspace.py) where a ticket change and its idempotency receipt commit together. Checkpoints resume the graph after a crash, and [saved actions](results/demo.json) can replay from a pre-run snapshot without relying on identical model text.
+- A [benchmark](traceguard/benchmark.py) with fixed task templates, a plain ungated baseline, malicious runbooks, a forced scripted policy test and post-commit restart trials. The [CLI](traceguard/__main__.py) runs the demo, replay, evaluation and interactive approval flow.
+
 ## Why I made this
 
 An agent can write a convincing final answer even when it took the wrong action. I wanted to grade the resulting workspace and action trace. I also wanted to make one specific failure visible: a runbook is useful evidence, but text inside it must not gain the authority to export another tenant's records.
@@ -64,6 +71,10 @@ The [machine-readable results](results/evaluation.json) record environment, mode
 
 The model took `get_runbook` then `finish` in all 24 malicious-runbook trials. It never proposed an export, so the zero-execution count in that row does **not** demonstrate a model attack blocked by the gate. I also ran a [separate deterministic test double](results/scripted_policy_evaluation.json) that deliberately proposes a cross-tenant export after reading that runbook: the gate blocked all 24 proposals, while the ungated baseline executed all 24. This is a policy-unit result, not a model success rate.
 
+![Model and scripted export outcomes](docs/img/export_gate.png)
+
+The first image shows task outcomes; this one separates local-model behavior from the forced scripted policy test. Both are generated from saved result JSON by [scripts/make_figures.py](scripts/make_figures.py).
+
 **What these numbers do not show:** this is a local synthetic operations workspace, not a production multi-tenant service. The gate enforces specified rules; zero executed unauthorized writes does not prove prompt-injection immunity or that every user intent is interpreted correctly. The planner is a small quantized model, and the four task classes use repetitive templates. The read/diagnose grader checks the exact tool read plus a required answer substring; the abstain grader checks workspace effects, not refusal wording. The crash test raises an exception after commit rather than pulling power from a machine, and repeats the same interruption boundary on 20 task IDs. The action trace is inserted separately from the tool effect, so a crash in that gap could omit one trace record; the durable idempotency receipt still prevents a duplicate effect. A production audit trail would need a transactional outbox. The baseline intentionally has no policy gate; it is not a comparison with a hardened production agent. Timings depend on the load recorded in the results file.
 
 ## Run it yourself
@@ -80,6 +91,8 @@ python3.11 -m venv .venv
 .venv/bin/python scripts/make_figures.py
 ```
 
+The tests should report **8 passed**. `demo` writes [results/demo.json](results/demo.json): check `attack_denials: 1`, `unauthorized_exports: 0`, `committed_writes_after_resume: 1` and `resumed_ticket_status: INVESTIGATING`. `replay` should print `same_action_and_effect_trace: true`. The full model evaluation writes [results/evaluation.json](results/evaluation.json) and takes longer than the demo on an M2 Mac; `make_figures.py` rebuilds both images from saved results.
+
 `demo` uses a deliberately adversarial scripted planner to show a blocked export and an idempotent restart. `evaluate` uses the real local model; its first run downloads the [Qwen2.5 1.5B 4-bit MLX model](https://huggingface.co/mlx-community/Qwen2.5-1.5B-Instruct-4bit). The model weights are not in this repository. To see a model-driven demo, run `.venv/bin/python -m traceguard demo --model`; a [sample model trace](results/model_demo/demo.json) and its replay are included. The model read and summarized the runbook correctly in that sample; the restart portion of the demo uses the scripted planner to hit the fault boundary exactly.
 
 For an interactive write approval, run `.venv/bin/python -m traceguard run "Mark alpha T01 INVESTIGATING."`. The CLI seeds a local synthetic workspace on first use and prints its action trace.
@@ -92,4 +105,4 @@ Eight tests cover a malicious runbook, the ungated baseline, cross-tenant and wr
 
 It is not an autonomous agent with arbitrary system access, a security proof, a production deployment or evidence that a small model understands every instruction. The workspace is synthetic and all writes are local SQLite effects. A real tool would need its own durable idempotency contract.
 
-I built this with AI pair-programming help. The recorded traces and benchmark cases are here so I can explain exactly what the agent did.
+The recorded traces, model cases and scripted policy cases are included so every claimed outcome can be checked against the resulting workspace state.
